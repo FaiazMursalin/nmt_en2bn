@@ -8,6 +8,10 @@ from model.BengaliEnglishNMT import BengaliEnglishNMT
 from torch.optim import Adam
 from helper.ParallelDataset import collate_fn
 from helper.Evaluate import evaluate_model
+import torch.cuda.amp
+from torch.cuda.amp import GradScaler
+from tqdm.auto import tqdm
+from torch.optim.lr_scheduler import OneCycleLR
 
 nltk.download('punkt')
 nltk.download('wordnet')
@@ -20,11 +24,13 @@ config = wandb.config
 config.batch_size = 32
 config.num_epochs = 10
 config.learning_rate = 5e-5
-config.max_length = 128
+config.max_length = 64
 config.split_ratios = [0.7, 0.2, 0.1]  # Train, Val, Test
-
+config.gradient_accumulation_steps = 4
 
 def main():
+    # cuda optimization
+    torch.backends.cudnn.benchmark = True
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
     # Load dataset
@@ -43,26 +49,43 @@ def main():
 
     # Create dataloaders
     train_loader = DataLoader(train_dataset, batch_size=config.batch_size,
-                              shuffle=True, collate_fn=collate_fn)
+                              shuffle=True, collate_fn=collate_fn, num_workers=8, pin_memory=True,
+                              persistent_workers=True, prefetch_factor=2)
     val_loader = DataLoader(val_dataset, batch_size=config.batch_size,
-                            shuffle=False, collate_fn=collate_fn)
+                            shuffle=False, collate_fn=collate_fn, num_workers=4, pin_memory=True)
     test_loader = DataLoader(test_dataset, batch_size=config.batch_size,
                              shuffle=False, collate_fn=collate_fn)
 
     # Initialize model
     model = BengaliEnglishNMT(
         mbert_model_name='bert-base-multilingual-cased',
-        tgt_vocab_size=50000  # Adjust based on vocab
+        tgt_vocab_size=32000,  # Adjust based on vocab
+        bn_spm_path='./dataset/vocab/bn.model'
     ).to(device)
 
     # Optimizer
     optimizer = Adam(model.parameters(), lr=config.learning_rate)
+    # Learning rate scheduler
+    scheduler = OneCycleLR(
+        optimizer,
+        max_lr=config.learning_rate,
+        total_steps=len(train_loader) * config.num_epochs // config.gradient_accumulation_steps,
+        pct_start=0.1,
+        anneal_strategy='cos'
+    )
+    scaler = GradScaler()
     criterion = nn.CrossEntropyLoss(ignore_index=0)
 
     # Training loop
     for epoch in range(config.num_epochs):
         model.train()
         total_loss = 0
+
+        train_progress = tqdm(enumerate(train_loader),
+                            total=len(train_loader),
+                            desc=f"Epoch {epoch+1}/{config.num_epochs}",
+                            leave=True)
+        optimizer.zero_grad(set_to_none=True)
 
         for batch_idx, batch in enumerate(train_loader):
             # Prepare inputs
@@ -71,27 +94,42 @@ def main():
             tgt_input = batch['bn_tokens'][:, :-1].to(device)
             tgt_output = batch['bn_tokens'][:, 1:].to(device)
 
-            # Forward pass
-            outputs = model(src_input_ids=src_input,
-                            src_attention_mask=src_mask,
-                            tgt_input=tgt_input)
 
-            # Calculate loss
-            loss = criterion(outputs.view(-1, outputs.size(-1)), tgt_output.reshape(-1))
+            # mixed prec forward
+            with torch.cuda.amp.autocast():
+                outputs = model(src_input, src_mask, tgt_input)
+                loss = criterion(outputs.view(-1, outputs.size(-1)), tgt_output.reshape(-1))
+                # Scale loss for gradient accumulation
+                loss = loss / config.gradient_accumulation_steps
 
-            # Backward pass
-            optimizer.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+            # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
+            # Update weights only after accumulating gradients
+            if (batch_idx + 1) % config.gradient_accumulation_steps == 0 or (batch_idx + 1) == len(train_loader):
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                scheduler.step()  # Step the scheduler
+                optimizer.zero_grad(set_to_none=True)
 
-            total_loss += loss.item()
+            # Track loss (adjust for gradient accumulation for reporting)
+            current_loss = loss.item() * config.gradient_accumulation_steps
+            total_loss += current_loss
 
+            # Update progress bar
+            train_progress.set_postfix({
+                'loss': f"{current_loss:.4f}",
+                'avg_loss': f"{total_loss / (batch_idx + 1):.4f}",
+                'lr': f"{scheduler.get_last_lr()[0]:.7f}"
+            })
+            # Log intermediate results
             if batch_idx % 100 == 0:
                 wandb.log({
                     'epoch': epoch,
                     'batch': batch_idx,
-                    'train_batch_loss': loss.item()
+                    'train_batch_loss': current_loss,
+                    'learning_rate': scheduler.get_last_lr()[0]
                 })
 
         # Evaluate on validation set
@@ -100,11 +138,11 @@ def main():
         # Log metrics
         avg_train_loss = total_loss / len(train_loader)
         wandb.log({
-            'epoch': epoch + 1,
-            'train_loss': avg_train_loss,
-            'val_loss': val_metrics['loss'],
-            'val_bleu': val_metrics['bleu'],
-            'val_meteor': val_metrics['meteor']
+        'epoch': epoch + 1,
+        'train_loss': avg_train_loss,
+        'val_loss': val_metrics['loss'],
+        'val_bleu': val_metrics['bleu'],
+        'val_meteor': val_metrics['meteor']
         })
 
         print(f"Epoch {epoch + 1}/{config.num_epochs}")
@@ -112,6 +150,7 @@ def main():
         print(f"Val Loss: {val_metrics['loss']:.4f}")
         print(f"Val BLEU: {val_metrics['bleu']:.4f}")
         print(f"Val METEOR: {val_metrics['meteor']:.4f}\n")
+
 
     # Final evaluation on test set
     test_metrics = evaluate_model(model, test_loader, device)
@@ -129,7 +168,6 @@ def main():
     # Save model
     torch.save(model.state_dict(), 'nmt_model_final.pt')
     wandb.save('nmt_model_final.pt')
-
 
 if __name__ == '__main__':
     main()

@@ -5,14 +5,16 @@ from helper.PositionalEncoding import PositionalEncoding
 from model.HierarchicalAttention import HierarchicalAttention
 from model.TransformerDecoder import TransformerDecoder
 from model.TransformerDecoderLayer import TransformerDecoderLayer
+import sentencepiece as spm
 
 
 class BengaliEnglishNMT(nn.Module):
     def __init__(self, mbert_model_name='bert-base-multilingual-cased',
-                 tgt_vocab_size=50000, embed_dim=768, num_decoder_layers=6):
+                 tgt_vocab_size=37000, embed_dim=768, num_decoder_layers=6, bn_spm_path=None):
         super().__init__()
         self.encoder = BertModel.from_pretrained(mbert_model_name)
         self.encoder_tokenizer = BertTokenizer.from_pretrained(mbert_model_name)
+        self.bn_spm = spm.SentencePieceProcessor(model_file=bn_spm_path)
         self.hierarchical_attention = HierarchicalAttention(embed_dim)
 
         # target embedding
@@ -22,7 +24,7 @@ class BengaliEnglishNMT(nn.Module):
         self.positional_encoding = PositionalEncoding(embed_dim)
 
         # decoder layers
-        decoder_layer = TransformerDecoderLayer(d_model=embed_dim, nhead=12, dim_feedforward=3072)
+        decoder_layer = TransformerDecoderLayer(d_model=embed_dim, nhead=12, dim_feedforward=3072, dropout=0.1)
         self.decoder = TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
         # output projection

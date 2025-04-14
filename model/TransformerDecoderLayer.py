@@ -1,5 +1,4 @@
 import torch.nn as nn
-from triton.ops import attention
 
 
 class TransformerDecoderLayer(nn.Module):
