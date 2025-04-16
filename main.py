@@ -147,13 +147,14 @@ def main():
                      betas=(0.9, 0.98),
                      eps=1e-9)
     # Learning rate scheduler
-    total_steps = (len(train_loader) * config.num_epochs) // config.gradient_accumulation_steps + 1
+    total_steps = (len(train_loader) * config.num_epochs) // config.gradient_accumulation_steps
     scheduler = OneCycleLR(
         optimizer,
         max_lr=3e-4,  # Match optimizer LR
         total_steps=total_steps,
         pct_start=0.3,  # Longer warmup
-        anneal_strategy='linear'
+        anneal_strategy='linear',
+        cycle_momentum=False
     )
     scaler = GradScaler()
     criterion = nn.CrossEntropyLoss(ignore_index=0)
@@ -213,7 +214,7 @@ def main():
 
                 # Check if we've reached the total step limit
                 current_step = (epoch * len(train_loader) + batch_idx + 1) // config.gradient_accumulation_steps
-                if current_step < total_steps:
+                if (batch_idx + 1) % config.gradient_accumulation_steps == 0 and scheduler.last_epoch < total_steps - 1:
                     scheduler.step()
 
                 optimizer.zero_grad(set_to_none=True)

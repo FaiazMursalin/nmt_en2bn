@@ -49,7 +49,7 @@ class BengaliEnglishNMT(nn.Module):
 
     def forward(self, src_input_ids, src_attention_mask, tgt_input):
         # 1. Verify input shapes
-        print(f"Input shapes - src: {src_input_ids.shape}, tgt: {tgt_input.shape}")  # Debug
+        # print(f"Input shapes - src: {src_input_ids.shape}, tgt: {tgt_input.shape}")  # Debug
 
         # 2. Proper encoder handling
         encoder_output = self.encoder(src_input_ids, src_attention_mask)
