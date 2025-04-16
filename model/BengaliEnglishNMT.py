@@ -6,13 +6,14 @@ from model.HierarchicalAttention import HierarchicalAttention
 from model.TransformerDecoder import TransformerDecoder
 from model.TransformerDecoderLayer import TransformerDecoderLayer
 import sentencepiece as spm
+from model.mBERTEncoder import mBERTEncoder
 
 
 class BengaliEnglishNMT(nn.Module):
     def __init__(self, mbert_model_name='bert-base-multilingual-cased',
-                 tgt_vocab_size=37000, embed_dim=768, num_decoder_layers=6, bn_spm_path=None):
+                 tgt_vocab_size=32000, embed_dim=768, num_decoder_layers=6, bn_spm_path=None):
         super().__init__()
-        self.encoder = BertModel.from_pretrained(mbert_model_name)
+        self.encoder = mBERTEncoder(model_name=mbert_model_name)
         self.encoder_tokenizer = BertTokenizer.from_pretrained(mbert_model_name)
         self.bn_spm = spm.SentencePieceProcessor(model_file=bn_spm_path)
         self.hierarchical_attention = HierarchicalAttention(embed_dim)
@@ -24,7 +25,12 @@ class BengaliEnglishNMT(nn.Module):
         self.positional_encoding = PositionalEncoding(embed_dim)
 
         # decoder layers
-        decoder_layer = TransformerDecoderLayer(d_model=embed_dim, nhead=12, dim_feedforward=3072, dropout=0.1)
+        decoder_layer = TransformerDecoderLayer(
+            d_model=embed_dim,
+            nhead=8,
+            dim_feedforward=2048,
+            dropout=0.3
+        )
         self.decoder = TransformerDecoder(decoder_layer, num_layers=num_decoder_layers)
 
         # output projection
@@ -42,12 +48,23 @@ class BengaliEnglishNMT(nn.Module):
         nn.init.zeros_(self.output_projection.bias)
 
     def forward(self, src_input_ids, src_attention_mask, tgt_input):
+        # 1. Verify input shapes
+        print(f"Input shapes - src: {src_input_ids.shape}, tgt: {tgt_input.shape}")  # Debug
+
+        # 2. Proper encoder handling
+        encoder_output = self.encoder(src_input_ids, src_attention_mask)
+        if isinstance(encoder_output, tuple):  # Handle BERT output format
+            encoder_output = encoder_output[0]
+
+        # 3. Add dimension checks
+        assert encoder_output.dim() == 3, f"Encoder output should be 3D, got {encoder_output.dim()}"
+
         # encode source first
         encoder_output = self.encoder(
             input_ids=src_input_ids,
             attention_mask=src_attention_mask
         )
-        encoder_hidden_states = encoder_output.last_hidden_state  # Extract the tensor
+        encoder_hidden_states = encoder_output # Extract the tensor
 
         # second hierarchical attention
         memory = self.hierarchical_attention(encoder_hidden_states)
