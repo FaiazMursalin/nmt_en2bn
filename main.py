@@ -23,13 +23,13 @@ wandb.init(project="bn-en-nmt")
 # Configuration
 config = wandb.config
 config.batch_size = 32
-config.num_epochs = 10
+config.num_epochs = 200
 config.learning_rate = 5e-5
 config.max_length = 64
 config.split_ratios = [0.7, 0.2, 0.1]  # Train, Val, Test
 config.gradient_accumulation_steps = 4
 config.use_subset = True
-config.subset_size = 1000
+config.subset_size = 800000
 
 
 def main():
@@ -174,8 +174,8 @@ def main():
             # Prepare inputs
             src_input = batch['en_tokens'].to(device)
             src_mask = batch['en_mask'].to(device)
-            tgt_input = batch['bn_tokens'][:, :-1].to(device)
-            tgt_output = batch['bn_tokens'][:, 1:].to(device)
+            tgt_input = batch['bn_tokens'].to(device)
+            tgt_output = batch['bn_tokens'].to(device)
 
             # ===== ADD THIS DEBUG CHECK =====
             if batch_idx == 0:
@@ -187,7 +187,7 @@ def main():
                 print("English token IDs:", english_tokens)
 
                 # Bengali
-                bengali_tokens = batch['bn_tokens'][0].cpu().numpy()
+                bengali_tokens = tgt_input[0].cpu().numpy()
                 bengali_text = model.bn_spm.decode(bengali_tokens[bengali_tokens != 0].tolist())  # Filter out padding
                 print("Bengali:", bengali_text)
                 print("Bengali token IDs:", bengali_tokens)
